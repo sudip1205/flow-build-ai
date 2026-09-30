@@ -9,6 +9,7 @@ export function validateGraph(graph: FlowGraph): ValidationResult {
   const errors: string[] = [];
   const starts = graph.nodes.filter((n) => n.type === "start");
   const ends = graph.nodes.filter((n) => n.type === "end");
+  const ids = new Set(graph.nodes.map((n) => n.id));
 
   if (starts.length !== 1) {
     errors.push(`Expected exactly 1 Start node, found ${starts.length}.`);
@@ -16,16 +17,44 @@ export function validateGraph(graph: FlowGraph): ValidationResult {
   if (ends.length < 1) {
     errors.push("Expected at least 1 End node.");
   }
+  if (ids.size !== graph.nodes.length) {
+    errors.push("Node ids must be unique.");
+  }
+
+  for (const edge of graph.edges) {
+    if (!ids.has(edge.source) || !ids.has(edge.target)) {
+      errors.push(`Edge "${edge.id}" points to a node that doesn't exist.`);
+    }
+  }
 
   for (const node of graph.nodes) {
-    if (node.type === "decision") {
-      const outgoing = graph.edges.filter((e) => e.source === node.id);
-      const labels = outgoing.map((e) => e.label);
-      if (!labels.includes("yes") || !labels.includes("no")) {
-        errors.push(
-          `Decision node "${node.data.label}" must have exactly one "yes" and one "no" outgoing edge.`
-        );
+    const outgoing = graph.edges.filter((e) => e.source === node.id);
+    const incoming = graph.edges.filter((e) => e.target === node.id);
+    const name = `"${node.data.label}"`;
+
+    switch (node.type) {
+      case "start":
+        if (incoming.length) errors.push(`Start node can't have incoming edges.`);
+        if (outgoing.length !== 1) errors.push(`Start node must have exactly one outgoing edge.`);
+        break;
+      case "end":
+        if (outgoing.length) errors.push(`End node ${name} can't have outgoing edges.`);
+        break;
+      case "decision": {
+        const labels = outgoing.map((e) => e.label);
+        const yes = labels.filter((l) => l === "yes").length;
+        const no = labels.filter((l) => l === "no").length;
+        if (yes !== 1 || no !== 1 || outgoing.length !== 2) {
+          errors.push(
+            `Decision node ${name} must have exactly one "yes" and one "no" outgoing edge.`
+          );
+        }
+        break;
       }
+      default:
+        if (outgoing.length !== 1) {
+          errors.push(`Node ${name} must have exactly one outgoing edge (found ${outgoing.length}).`);
+        }
     }
   }
 
