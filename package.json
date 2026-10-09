@@ -1,6 +1,6 @@
 {
   "name": "flowbuild-ai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Draw a flowchart, pick a language, get working code — an AI-powered diagram-to-code tool.",
   "scripts": {

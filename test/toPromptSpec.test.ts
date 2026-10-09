@@ -33,21 +33,30 @@ describe("toPromptSpec", () => {
     expect(toPromptSpec(graph([...nodes].reverse(), [...edges].reverse()))).toBe(spec);
   });
 
-  it("tags steps with their type and endpoint or table", () => {
+  it("tags calls with their type, operation, target, input and output", () => {
     const nodes = [
       node("s", "start"),
-      node("crm", "step", { label: "Call to Salesforce", action: "api", resource: "POST /owners/verify" }),
-      node("db", "step", { label: "Call CIAM DB", action: "db", resource: "users" }),
-      node("calc", "step", { label: "Score", action: "logic" }),
-      node("plain", "step", { label: "Notify" }),
+      node("crm", "call", {
+        label: "Verify owner",
+        callType: "rest",
+        operation: "POST",
+        target: "/owners/verify",
+        input: "Request.ownerId",
+        output: "Owner.verified",
+      }),
+      node("db", "call", { label: "Load user", callType: "db", operation: "select", target: "users", description: "by email" }),
+      node("q", "call", { label: "Announce", callType: "queue" }),
+      node("calc", "step", { label: "Score" }),
       node("e", "end"),
     ];
-    const edges = [edge("s", "crm"), edge("crm", "db"), edge("db", "calc"), edge("calc", "plain"), edge("plain", "e")];
+    const edges = [edge("s", "crm"), edge("crm", "db"), edge("db", "q"), edge("q", "calc"), edge("calc", "e")];
     const spec = toPromptSpec(graph(nodes, edges));
-    expect(spec).toContain('STEP [REST API CALL: POST /owners/verify] "Call to Salesforce"');
-    expect(spec).toContain('STEP [DB CALL: table users] "Call CIAM DB"');
-    expect(spec).toContain('STEP [LOGIC] "Score"');
-    expect(spec).toContain('STEP "Notify"');
+    expect(spec).toContain(
+      '- [crm] CALL [REST API: POST /owners/verify] "Verify owner" (input: Request.ownerId; output: Owner.verified)'
+    );
+    expect(spec).toContain('- [db] CALL [DATABASE: select table users] "Load user": by email');
+    expect(spec).toContain('- [q] CALL [QUEUE] "Announce"');
+    expect(spec).toContain('- [calc] STEP "Score"');
   });
 
   it("keeps back-edges so loops survive", () => {

@@ -15,3 +15,11 @@ node_modules
 .mcp.json
 .vscode/
 .ignore
+
+# Saved FlowBuild diagrams are project files, not source
+*flowbuild-diagram*.json
+
+# Personal working files and local agent tooling
+Claude outputs/
+.agents/
+skills-lock.json

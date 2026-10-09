@@ -65,3 +65,40 @@ describe("validateGraph", () => {
     expect(result.errors.some((e) => e.includes("doesn't exist"))).toBe(true);
   });
 });
+
+describe("data references", () => {
+  const order = { id: "o", name: "Order", role: "input" as const, fields: [{ name: "id" }, { name: "total" }] };
+  const flow = (extra: Parameters<typeof node>[2]) => ({
+    ...graph([node("s", "start"), node("w", "call", extra), node("e", "end")], [edge("s", "w"), edge("w", "e")]),
+    data: [order],
+  });
+
+  it("accept known fields and names that aren't data objects", () => {
+    const result = validateGraph(
+      flow({ label: "Charge", input: "Order.id", description: "uses Order.total and item.price" })
+    );
+    expect(result).toEqual({ valid: true, errors: [] });
+  });
+
+  it("flag a field the data object doesn't have", () => {
+    const result = validateGraph(flow({ label: "Charge", input: "Order.amount", output: "Order.amount" }));
+    expect(result.errors).toEqual(['"Charge" uses Order.amount, but Order has no field "amount".']);
+  });
+
+  it("require code-friendly, unique names", () => {
+    const result = validateGraph({
+      ...graph([node("s", "start"), node("e", "end")], [edge("s", "e")]),
+      data: [
+        { id: "a", name: "My order", role: "state", fields: [{ name: "x" }, { name: "x" }, { name: "2x" }] },
+        { id: "b", name: "Dup", role: "state", fields: [] },
+        { id: "c", name: "Dup", role: "state", fields: [] },
+      ],
+    });
+    expect(result.errors).toEqual([
+      'Data object name "My order" must be one word: letters, digits and _ only.',
+      'My order has two fields named "x".',
+      'Field "2x" in My order must be one word: letters, digits and _ only.',
+      'There are two data objects named "Dup".',
+    ]);
+  });
+});

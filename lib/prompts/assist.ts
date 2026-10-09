@@ -1,6 +1,6 @@
 import { parseGraph } from "@/lib/graph/parse";
-import { formatFields, parseFields } from "@/lib/graph/fields";
-import { FlowGraph, NodeKind, isStepAction } from "@/lib/graph/types";
+import { formatFields } from "@/lib/graph/fields";
+import { CALL_TYPES, CallType, FlowGraph, isCallType } from "@/lib/graph/types";
 
 /**
  * When to use each node kind. Mirrors the rules validateGraph enforces and
@@ -9,36 +9,48 @@ import { FlowGraph, NodeKind, isStepAction } from "@/lib/graph/types";
  */
 const NODE_GUIDE = [
   `- start: where the flow begins. Exactly one per diagram. No incoming edges, exactly one outgoing edge.`,
-  `- dataStore: a variable, input or piece of state the flow reads or updates (becomes a named variable in code). label = the variable name (e.g. "orders", "total"); description = what it holds and its starting value (e.g. "running total, starts at 0"). Several related values can share one dataStore (always do this when the user asks to keep values together): then label = a name for the group (e.g. "Order state") and "fields" = its variables as comma-separated text, each optionally "name = initial value" (e.g. "orders, total = 0, count = 0"). Variables go in "fields", never in "description". Put these right after start, in the main path. Exactly one outgoing edge.`,
-  `- step: an action — calculate, call, save, send, transform. label = short verb phrase; description = what it does, code-like is fine (e.g. "total += order.amount"). A step that calls another service over HTTP gets action "api" and resource = its endpoint (e.g. "POST /v1/accounts/verify"); one that reads or writes a database gets action "db" and resource = the table name; plain logic needs no action. Exactly one outgoing edge.`,
-  `- decision: a yes/no question that branches (if/else). condition = the boolean expression (e.g. "order.status == 'paid'"). Exactly two outgoing edges, labelled "yes" and "no". For a loop, make a decision like "More items?" and send the end of the loop body back to it with an edge.`,
+  `- step: plain logic — calculate, transform, check, build something. label = short verb phrase; description = what it does, code-like is fine and uses data references (e.g. "Totals.total += order.amount"). Exactly one outgoing edge.`,
+  `- call: a backend call. "callType" is one of ${CALL_TYPES.join(", ")} (rest = HTTP API, db = database, queue = publish/consume a message, cache, email = any notification, sdk = third-party SDK, llm = AI model). "operation" = the verb (e.g. "POST", "select", "publish"); "target" = the endpoint, table, topic, key, SDK method or model (e.g. "/v1/accounts/verify", "users"); "input" = what it sends and "output" = where the result goes, both as data references (e.g. input "Request.accountId", output "Account.status"). Use a call — never a step — for anything that talks to another system or a database. Exactly one outgoing edge.`,
+  `- decision: a yes/no question that branches (if/else). condition = the boolean expression (e.g. "Account.status == 'active'"). Exactly two outgoing edges, labelled "yes" and "no". For a loop, make a decision like "More items?" and send the end of the loop body back to it with an edge.`,
   `- end: where the flow finishes. At least one. No outgoing edges. label can name the result (e.g. "Return total").`,
+].join("\n");
+
+/** Data objects live beside the flow, never in it. */
+const DATA_GUIDE = [
+  `- The flow's data lives in "data", NOT in nodes: a list of objects {"name", "role", "description"?, "fields"}. name is one word in PascalCase (e.g. "Request", "Totals"). role is "input" (what the flow is called with), "output" (what it returns), "state" (working values) or "config" (settings). fields is comma-separated text, each "name: type = initial value" with type and value optional (e.g. "total: number = 0, count: number = 0").`,
+  `- Nodes refer to data as Name.field (e.g. "Request.accountId"). Only use fields that exist; add a field to its object when the flow needs a new one.`,
+  `- Return "data" with every object you keep (same names), or leave "data" out to keep the current data unchanged.`,
 ].join("\n");
 
 // A loop that also filters, since that's the shape small models most often
 // get wrong (folding "more items?" and "keep this one?" into one decision).
 const EXAMPLE_REPLY = JSON.stringify({
   intent: "change",
-  reply: "Added a dataStore for the input and one holding both running totals, a loop over the numbers, and a check that only adds even ones.",
+  reply: "Loads the customer's orders from the database, loops over them and adds up only the paid ones, keeping the running totals in a state object.",
   diagram: {
+    data: [
+      { name: "Request", role: "input", fields: "customerId: string" },
+      { name: "Totals", role: "state", fields: "orders: list, total: number = 0, count: number = 0" },
+      { name: "Response", role: "output", fields: "total: number, count: number" },
+    ],
     nodes: [
       { id: "start", kind: "start", label: "Start" },
-      { id: "numbers", kind: "dataStore", label: "numbers", description: "input list of integers" },
-      { id: "totals", kind: "dataStore", label: "Running totals", fields: "total = 0, count = 0", description: "sum and count of even numbers so far" },
-      { id: "more", kind: "decision", label: "More numbers?", condition: "there is a next number" },
-      { id: "even", kind: "decision", label: "Is it even?", condition: "number % 2 == 0" },
-      { id: "add", kind: "step", label: "Add to total", description: "total += number; count += 1" },
-      { id: "end", kind: "end", label: "Return total" },
+      { id: "load", kind: "call", label: "Load orders", callType: "db", operation: "select", target: "orders", input: "Request.customerId", output: "Totals.orders" },
+      { id: "more", kind: "decision", label: "More orders?", condition: "there is a next order in Totals.orders" },
+      { id: "paid", kind: "decision", label: "Is it paid?", condition: "order.status == 'paid'" },
+      { id: "add", kind: "step", label: "Add to total", description: "Totals.total += order.amount; Totals.count += 1" },
+      { id: "reply", kind: "step", label: "Build response", description: "Response.total = Totals.total; Response.count = Totals.count" },
+      { id: "end", kind: "end", label: "Return totals" },
     ],
     edges: [
-      { from: "start", to: "numbers" },
-      { from: "numbers", to: "totals" },
-      { from: "totals", to: "more" },
-      { from: "more", to: "even", label: "yes" },
-      { from: "even", to: "add", label: "yes" },
-      { from: "even", to: "more", label: "no" },
+      { from: "start", to: "load" },
+      { from: "load", to: "more" },
+      { from: "more", to: "paid", label: "yes" },
+      { from: "paid", to: "add", label: "yes" },
+      { from: "paid", to: "more", label: "no" },
       { from: "add", to: "more" },
-      { from: "more", to: "end", label: "no" },
+      { from: "more", to: "reply", label: "no" },
+      { from: "reply", to: "end" },
     ],
   },
 });
@@ -52,11 +64,19 @@ function compactGraph(graph: FlowGraph) {
       label: n.data.label,
       ...(n.data.description ? { description: n.data.description } : {}),
       ...(n.data.condition ? { condition: n.data.condition } : {}),
-      ...(n.data.fields ? { fields: n.data.fields } : {}),
-      ...(n.data.action ? { action: n.data.action } : {}),
-      ...(n.data.resource ? { resource: n.data.resource } : {}),
+      ...(n.data.callType ? { callType: n.data.callType } : {}),
+      ...(n.data.operation ? { operation: n.data.operation } : {}),
+      ...(n.data.target ? { target: n.data.target } : {}),
+      ...(n.data.input ? { input: n.data.input } : {}),
+      ...(n.data.output ? { output: n.data.output } : {}),
     })),
     edges: graph.edges.map((e) => ({ from: e.source, to: e.target, ...(e.label ? { label: e.label } : {}) })),
+    data: (graph.data ?? []).map((d) => ({
+      name: d.name,
+      role: d.role,
+      ...(d.description ? { description: d.description } : {}),
+      fields: formatFields(d.fields),
+    })),
   };
 }
 
@@ -70,11 +90,15 @@ export function buildAssistPrompt(request: string, graph: FlowGraph): string {
     `Node kinds (use exactly these names):`,
     NODE_GUIDE,
     ``,
+    `Data:`,
+    DATA_GUIDE,
+    ``,
     `Rules:`,
     `- Keep the id of every existing node you keep. New ids are short snake_case words.`,
     `- Labels are short (2-5 words); put detail in description or condition.`,
     `- Only "yes"/"no" edge labels, and only on edges leaving a decision.`,
     `- If the user asks you to build something new and the diagram only has Start/End, replace it.`,
+    `- The flow holds only steps, calls and decisions between start and end; data is never a node.`,
     `- To process each item of a list, use a loop: a decision like "More orders?" whose "yes" edge leads into the loop body, the last node of the body goes back to that decision, and "no" leads on to the rest of the flow.`,
   `- Checking each item (e.g. "only paid orders") is a SECOND decision inside the loop body; its "no" edge goes back to the loop decision. Never use the item check as the loop decision.`,
     ``,
@@ -90,8 +114,8 @@ export function buildAssistPrompt(request: string, graph: FlowGraph): string {
     request,
     ``,
     `Respond with ONLY one JSON object and nothing else:`,
-    `{"intent": "question" or "change", "reply": "<1-3 sentences: the answer to their question, or what you changed and why you chose those node kinds>", "diagram": <for "change": the COMPLETE updated diagram as {"nodes": [...], "edges": [...]}; for "question": null>}`,
-    `Node: {"id", "kind", "label", "description"?, "condition"?, "fields"? (dataStore only), "action"? and "resource"? (step only)}. Edge: {"from", "to", "label"?}.`,
+    `{"intent": "question" or "change", "reply": "<1-3 sentences: the answer to their question, or what you changed and why you chose those node kinds>", "diagram": <for "change": the COMPLETE updated diagram as {"data": [...], "nodes": [...], "edges": [...]}; for "question": null>}`,
+    `Data object: {"name", "role", "description"?, "fields"}. Node: {"id", "kind", "label", "description"?, "condition"? (decision only), "callType"?, "operation"?, "target"?, "input"?, "output"? (call only)}. Edge: {"from", "to", "label"?}.`,
     ``,
     `Example response:`,
     EXAMPLE_REPLY,
@@ -112,12 +136,15 @@ export function buildAssistRepairPrompt(originalPrompt: string, badReply: string
   ].join("\n");
 }
 
-const KIND_ALIASES: Record<string, NodeKind> = {
+// "dataStore" is the old data node; parseGraph turns those into data objects.
+const KIND_ALIASES: Record<string, string> = {
   start: "start",
   begin: "start",
   step: "step",
   action: "step",
   process: "step",
+  logic: "step",
+  call: "call",
   decision: "decision",
   condition: "decision",
   branch: "decision",
@@ -130,6 +157,28 @@ const KIND_ALIASES: Record<string, NodeKind> = {
   finish: "end",
 };
 
+// Kinds a model may use for a call, naming its type instead.
+const CALL_KIND_ALIASES: Record<string, CallType> = {
+  api: "rest",
+  rest: "rest",
+  http: "rest",
+  apicall: "rest",
+  restcall: "rest",
+  db: "db",
+  database: "db",
+  dbcall: "db",
+  query: "db",
+  graphql: "graphql",
+  grpc: "grpc",
+  queue: "queue",
+  event: "queue",
+  cache: "cache",
+  email: "email",
+  notification: "email",
+  sdk: "sdk",
+  llm: "llm",
+};
+
 const BRANCH_ALIASES: Record<string, "yes" | "no"> = { yes: "yes", true: "yes", y: "yes", no: "no", false: "no", n: "no" };
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -137,11 +186,13 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
 
 const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
-/** Variables as the canonical comma-separated text, whether the model wrote a string or a list. */
-function fieldsText(v: unknown): string | undefined {
-  const raw = Array.isArray(v) ? v.filter((x) => typeof x === "string").join(", ") : text(v);
-  return raw ? formatFields(parseFields(raw)) || undefined : undefined;
-}
+/** Old-style data node variables as text, whether the model wrote a string or a list. */
+const fieldsText = (v: unknown) => (Array.isArray(v) ? v.filter((x) => typeof x === "string").join(", ") : text(v));
+
+const callTypeOf = (v: unknown): CallType | undefined => {
+  const name = String(v ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  return isCallType(name) ? name : CALL_KIND_ALIASES[name];
+};
 
 /** Pulls the first JSON object out of a reply, tolerating code fences and chatter around it. */
 function extractJson(raw: string): unknown {
@@ -182,12 +233,13 @@ export function parseAssistReply(raw: string): AssistReply | { error: string } {
   }
 
   const ids = new Set<string>();
-  const kinds = new Map<string, NodeKind>();
+  const kinds = new Map<string, string>();
   const nodes = [];
   for (const [i, raw] of diagram.nodes.entries()) {
     if (!isObject(raw)) return { error: `Node ${i + 1} isn't an object.` };
     const kindName = String(raw.kind ?? raw.type ?? "").toLowerCase().replace(/[^a-z]/g, "");
-    const kind = KIND_ALIASES[kindName];
+    const aliasedCall = CALL_KIND_ALIASES[kindName];
+    const kind = aliasedCall ? "call" : KIND_ALIASES[kindName];
     if (!kind) return { error: `Node ${i + 1} has unknown kind "${raw.kind ?? raw.type}".` };
     let id = text(raw.id) ?? `${kind}_${i + 1}`;
     while (ids.has(id)) id = `${id}_${i + 1}`;
@@ -201,9 +253,16 @@ export function parseAssistReply(raw: string): AssistReply | { error: string } {
         label,
         description: text(raw.description),
         condition: kind === "decision" ? text(raw.condition) : undefined,
-        fields: kind === "dataStore" ? fieldsText(raw.fields ?? raw.variables) : undefined,
-        action: kind === "step" && isStepAction(raw.action) ? raw.action : undefined,
-        resource: kind === "step" ? text(raw.resource) : undefined,
+        ...(kind === "dataStore" ? { fields: fieldsText(raw.fields ?? raw.variables) } : {}),
+        ...(kind === "call"
+          ? {
+              callType: callTypeOf(raw.callType ?? raw.type) ?? aliasedCall ?? "rest",
+              operation: text(raw.operation) ?? text(raw.method),
+              target: text(raw.target) ?? text(raw.resource) ?? text(raw.endpoint) ?? text(raw.table),
+              input: text(raw.input),
+              output: text(raw.output),
+            }
+          : {}),
       },
     });
   }
@@ -223,8 +282,11 @@ export function parseAssistReply(raw: string): AssistReply | { error: string } {
     edges.push({ id, source, target, label });
   }
 
-  // Reuse the request parser for its size limits and final shape.
-  const parsed = parseGraph({ nodes, edges });
+  const data = Array.isArray(diagram.data) ? diagram.data : undefined;
+
+  // Reuse the request parser for its size limits, its final shape and for
+  // turning any old-style data nodes into data objects.
+  const parsed = parseGraph({ nodes, edges, ...(data ? { data } : {}) });
   if ("error" in parsed) return { error: parsed.error };
   return { reply, graph: parsed.graph };
 }

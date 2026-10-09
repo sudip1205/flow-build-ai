@@ -1,3 +1,4 @@
+import { IDENTIFIER, REFERENCE_KEYS, findReferences, referenceStatus } from "./data";
 import { FlowGraph } from "./types";
 
 export interface ValidationResult {
@@ -77,5 +78,43 @@ export function validateGraph(graph: FlowGraph): ValidationResult {
     }
   }
 
+  errors.push(...dataErrors(graph));
+
   return { valid: errors.length === 0, errors };
+}
+
+/** Data object names and fields must be usable as code identifiers, and references must point at real fields. */
+function dataErrors(graph: FlowGraph): string[] {
+  const errors: string[] = [];
+  const data = graph.data ?? [];
+  const names = new Set<string>();
+  for (const object of data) {
+    if (!IDENTIFIER.test(object.name)) {
+      errors.push(`Data object name "${object.name}" must be one word: letters, digits and _ only.`);
+    }
+    if (names.has(object.name)) errors.push(`There are two data objects named "${object.name}".`);
+    names.add(object.name);
+    const fields = new Set<string>();
+    for (const field of object.fields) {
+      if (!IDENTIFIER.test(field.name)) {
+        errors.push(`Field "${field.name}" in ${object.name} must be one word: letters, digits and _ only.`);
+      }
+      if (fields.has(field.name)) errors.push(`${object.name} has two fields named "${field.name}".`);
+      fields.add(field.name);
+    }
+  }
+
+  for (const node of graph.nodes) {
+    const missing = new Set<string>();
+    for (const key of REFERENCE_KEYS) {
+      for (const ref of findReferences(node.data[key])) {
+        if (referenceStatus(ref, data) === "unknown-field") missing.add(`${ref.name}.${ref.field}`);
+      }
+    }
+    for (const ref of missing) {
+      const [name, field] = ref.split(".");
+      errors.push(`"${node.data.label}" uses ${ref}, but ${name} has no field "${field}".`);
+    }
+  }
+  return errors;
 }

@@ -31,23 +31,41 @@ describe("parseGraph", () => {
   });
 });
 
-describe("step type", () => {
-  it("keeps a step's action and resource, and drops them elsewhere or when invalid", () => {
+describe("call nodes", () => {
+  it("keep their call settings, and drop them on other kinds", () => {
     const result = parseGraph({
       nodes: [
-        { id: "a", data: { kind: "step", label: "Call CRM", action: "api", resource: "POST /owners" } },
-        { id: "b", data: { kind: "step", label: "Mystery", action: "teleport", resource: "  " } },
-        { id: "d", data: { kind: "decision", label: "Ok?", action: "db", resource: "users" } },
+        {
+          id: "a",
+          data: { kind: "call", label: "Verify", callType: "grpc", operation: "unary", target: "Svc/Verify", input: "R.id", output: "R.ok" },
+        },
+        { id: "b", data: { kind: "call", label: "Mystery", callType: "teleport" } },
+        { id: "d", data: { kind: "decision", label: "Ok?", callType: "db", target: "users" } },
       ],
       edges: [],
     });
     if ("error" in result) throw new Error(result.error);
     const [a, b, d] = result.graph.nodes.map((n) => n.data);
-    expect(a).toMatchObject({ action: "api", resource: "POST /owners" });
-    expect(b.action).toBeUndefined();
-    expect(b.resource).toBeUndefined();
-    expect(d.action).toBeUndefined();
-    expect(d.resource).toBeUndefined();
+    expect(a).toMatchObject({ callType: "grpc", operation: "unary", target: "Svc/Verify", input: "R.id", output: "R.ok" });
+    expect(b.callType).toBe("rest");
+    expect(d.callType).toBeUndefined();
+    expect(d.target).toBeUndefined();
+  });
+
+  it("replace old api/db steps; logic steps stay steps", () => {
+    const result = parseGraph({
+      nodes: [
+        { id: "a", data: { kind: "step", label: "Call CRM", action: "api", resource: "POST /owners" } },
+        { id: "b", data: { kind: "step", label: "Save", action: "db", resource: "users" } },
+        { id: "c", data: { kind: "step", label: "Score", action: "logic" } },
+      ],
+      edges: [],
+    });
+    if ("error" in result) throw new Error(result.error);
+    const [a, b, c] = result.graph.nodes;
+    expect(a).toMatchObject({ type: "call", data: { kind: "call", callType: "rest", target: "POST /owners" } });
+    expect(b).toMatchObject({ type: "call", data: { kind: "call", callType: "db", target: "users" } });
+    expect(c.data).toEqual({ kind: "step", label: "Score", description: undefined, condition: undefined });
   });
 });
 
@@ -76,6 +94,8 @@ describe("diagram files", () => {
     expect(result.language).toBe("go");
     expect(result.graph.edges).toEqual(EXAMPLE_DIAGRAM.edges);
     expect(result.graph.nodes.map((n) => n.id)).toEqual(EXAMPLE_DIAGRAM.nodes.map((n) => n.id));
+    expect(result.graph.nodes.map((n) => n.data)).toMatchObject(EXAMPLE_DIAGRAM.nodes.map((n) => n.data));
+    expect(result.graph.data).toEqual(EXAMPLE_DIAGRAM.data);
   });
 
   it("rejects unrelated JSON", () => {

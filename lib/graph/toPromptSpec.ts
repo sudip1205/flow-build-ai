@@ -1,5 +1,6 @@
-import { FlowGraph, FlowNode, StepAction } from "./types";
-import { formatField, parseFields } from "./fields";
+import { DataObject, FlowGraph, FlowNode } from "./types";
+import { formatField } from "./fields";
+import { CALL_TYPE_INFO } from "./calls";
 
 /**
  * Converts a validated flow graph into a deterministic, structured text
@@ -10,12 +11,22 @@ import { formatField, parseFields } from "./fields";
  * Nodes are listed in breadth-first order from Start (so the output doesn't
  * depend on the order they were drawn in), each tagged with its id so edges
  * can refer back to it — including back-edges, which the model renders as loops.
+ * Data objects, when there are any, come first in their own section.
  */
-const ACTION_TAGS: Record<StepAction, (resource?: string) => string> = {
-  logic: () => "[LOGIC] ",
-  api: (resource) => `[REST API CALL${resource ? `: ${resource}` : ""}] `,
-  db: (resource) => `[DB CALL${resource ? `: table ${resource}` : ""}] `,
-};
+function describeCall(node: FlowNode) {
+  const { callType = "rest", operation, target, input, output, label, description } = node.data;
+  const info = CALL_TYPE_INFO[callType];
+  const where = [operation, callType === "db" && target ? `table ${target}` : target].filter(Boolean).join(" ");
+  const io = [input && `input: ${input}`, output && `output: ${output}`].filter(Boolean).join("; ");
+  return `CALL [${info.tag}${where ? `: ${where}` : ""}] "${label}"${description ? `: ${description}` : ""}${io ? ` (${io})` : ""}`;
+}
+
+function describeData(data: DataObject[]): string[] {
+  return data.flatMap((d) => [
+    `- ${d.name} (${d.role})${d.description ? `: ${d.description}` : ""}`,
+    ...d.fields.map((f) => `    ${formatField(f)}`),
+  ]);
+}
 
 export function toPromptSpec(graph: FlowGraph): string {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
@@ -32,14 +43,11 @@ export function toPromptSpec(graph: FlowGraph): string {
       case "end":
         return `END${node.data.label && node.data.label !== "End" ? ` "${node.data.label}"` : ""}`;
       case "step":
-        return `STEP ${node.data.action ? ACTION_TAGS[node.data.action](node.data.resource) : ""}"${node.data.label}"${node.data.description ? `: ${node.data.description}` : ""}`;
+        return `STEP "${node.data.label}"${node.data.description ? `: ${node.data.description}` : ""}`;
+      case "call":
+        return describeCall(node);
       case "decision":
         return `DECISION "${node.data.label}"${node.data.condition ? ` (condition: ${node.data.condition})` : ""}${node.data.description ? `: ${node.data.description}` : ""}`;
-      case "dataStore": {
-        const fields = parseFields(node.data.fields);
-        const vars = fields.length ? ` (variables: ${fields.map(formatField).join("; ")})` : "";
-        return `DATA "${node.data.label}"${vars}${node.data.description ? `: ${node.data.description}` : ""}`;
-      }
       default:
         return node.data.label;
     }
@@ -68,5 +76,7 @@ export function toPromptSpec(graph: FlowGraph): string {
     });
   });
 
-  return lines.join("\n");
+  const data = graph.data ?? [];
+  if (!data.length) return lines.join("\n");
+  return ["DATA:", ...describeData(data), "", "FLOW:", ...lines].join("\n");
 }

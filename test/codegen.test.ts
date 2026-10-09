@@ -34,10 +34,13 @@ describe("buildCodegenPrompt", () => {
     expect(prompt).toContain("JpaRepository");
   });
 
-  it("explains how to treat REST calls, DB calls and untagged steps", () => {
+  it("explains data objects, references, each call type and old-style call steps", () => {
     const prompt = buildCodegenPrompt("- [s] START", "python");
-    expect(prompt).toContain("STEP [REST API CALL]");
-    expect(prompt).toContain("STEP [DB CALL]");
+    expect(prompt).toContain('Role "input" objects become FlowRequest');
+    expect(prompt).toContain("Name.field anywhere in the flow");
+    for (const tag of ["REST API ->", "GRAPHQL ->", "GRPC ->", "DATABASE ->", "QUEUE ->", "CACHE ->", "EMAIL ->", "SDK ->", "LLM ->"]) {
+      expect(prompt).toContain(tag);
+    }
     expect(prompt).toContain('"Call to Salesforce"');
     expect(prompt).toContain('"Call CIAM DB"');
     expect(prompt).toContain("one entity and one repository per table");
@@ -115,6 +118,68 @@ describe("extractFiles", () => {
         content: '# App\n```bash\nmvn spring-boot:run\n```\nExample:\n```json\n{ "a": 1 }\n```\nDone.',
       },
       { path: "src/main/java/com/flowbuild/app/Application.java", content: "class Application {}" },
+    ]);
+  });
+
+  it("takes a name from the heading or bold line above a block", () => {
+    const raw = [
+      "Here is the project.",
+      "### `pom.xml`",
+      "```xml",
+      "<project/>",
+      "```",
+      "**src/main/resources/application.yml**:",
+      "```yaml",
+      "server:",
+      "  port: 8080",
+      "```",
+      "e.g. version 1.2 of the service:",
+      "```python",
+      "x = 1",
+      "```",
+    ].join("\n");
+    expect(extractFiles(raw, "python").map((f) => f.path)).toEqual([
+      "pom.xml",
+      "src/main/resources/application.yml",
+      "app/services/flow_service.py",
+    ]);
+  });
+
+  it("places unnamed Java classes by package and class, and spots the build file and settings", () => {
+    const raw = [
+      "```xml",
+      '<?xml version="1.0"?>',
+      "<project>",
+      "</project>",
+      "```",
+      "```yaml",
+      "spring:",
+      "  datasource: {}",
+      "```",
+      "```java",
+      "package com.flowbuild.app.client.dto;",
+      "",
+      "public record CiamLookupRequest(String email) {}",
+      "```",
+      "FlowServiceTest.java",
+      "```java",
+      "package com.flowbuild.app.service;",
+      "",
+      "class FlowServiceTest {}",
+      "```",
+      "```java",
+      "package com.flowbuild.app.entity;",
+      "",
+      "@Entity",
+      "public class User {}",
+      "```",
+    ].join("\n");
+    expect(extractFiles(raw, "java").map((f) => f.path)).toEqual([
+      "pom.xml",
+      "src/main/resources/application.yml",
+      "src/main/java/com/flowbuild/app/client/dto/CiamLookupRequest.java",
+      "src/test/java/com/flowbuild/app/service/FlowServiceTest.java",
+      "src/main/java/com/flowbuild/app/entity/User.java",
     ]);
   });
 

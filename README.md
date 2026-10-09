@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/brand/logo-wordmark.jpg" alt="FlowBuild-AI" width="520">
+</p>
+
 # FlowBuild-AI
 
 Draw a flowchart, pick a language, get a working project.

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { autoLayout } from "@/lib/graph/layout";
+import { autoLayout, placeData } from "@/lib/graph/layout";
+import { parseGraph } from "@/lib/graph/parse";
+import { toPromptSpec } from "@/lib/graph/toPromptSpec";
 import { EXAMPLE_DIAGRAM } from "@/lib/examples";
-import { FlowGraph } from "@/lib/graph/types";
+import { DataObject, FlowGraph } from "@/lib/graph/types";
 import { edge, graph, node } from "./fixtures";
 
 const pos = (g: FlowGraph, id: string) => g.nodes.find((n) => n.id === id)!.position;
@@ -45,5 +47,47 @@ describe("autoLayout", () => {
     const after = graph([node("s", "start"), node("mid", "step"), node("e", "end")], [edge("s", "mid"), edge("mid", "e")]);
     const out = autoLayout(after, before);
     expect(pos(out, "e").y).toBeGreaterThan(pos(out, "mid").y);
+  });
+});
+
+describe("data set tables", () => {
+  const object = (id: string, name: string, extra: Partial<DataObject> = {}): DataObject => ({
+    id,
+    name,
+    role: "state",
+    fields: [{ name: "x" }],
+    ...extra,
+  });
+  const flow = graph([{ ...node("s", "start"), position: { x: 100, y: 50 } }], []);
+
+  it("stacks unplaced tables in a column left of the flow", () => {
+    const out = placeData({ ...flow, data: [object("a", "A"), object("b", "B")] });
+    const [a, b] = out.data!.map((d) => d.position!);
+    expect(a.x).toBeLessThan(100);
+    expect(a.y).toBe(50);
+    expect(b.x).toBe(a.x);
+    expect(b.y).toBeGreaterThan(a.y);
+  });
+
+  it("keeps a table's own position, or the one it had before by id or name", () => {
+    const previous = { ...flow, data: [object("old", "B", { position: { x: 7, y: 8 } })] };
+    const out = placeData({ ...flow, data: [object("a", "A", { position: { x: 1, y: 2 } }), object("new", "B")] }, previous);
+    expect(out.data!.map((d) => d.position)).toEqual([
+      { x: 1, y: 2 },
+      { x: 7, y: 8 },
+    ]);
+  });
+
+  it("autoLayout places tables too", () => {
+    const out = autoLayout({ ...flow, data: [object("a", "A")] });
+    expect(out.data![0].position).toBeDefined();
+  });
+
+  it("table positions survive parsing and stay out of the codegen spec", () => {
+    const g = { ...flow, data: [object("a", "A", { position: { x: -300, y: 20 } })] };
+    const parsed = parseGraph(g);
+    if ("error" in parsed) throw new Error(parsed.error);
+    expect(parsed.graph.data![0].position).toEqual({ x: -300, y: 20 });
+    expect(toPromptSpec(parsed.graph)).not.toContain("-300");
   });
 });

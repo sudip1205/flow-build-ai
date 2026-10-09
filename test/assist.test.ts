@@ -6,16 +6,15 @@ import { buildAssistPrompt, parseAssistReply } from "@/lib/prompts/assist";
 import { validateGraph } from "@/lib/graph/validate";
 
 const VALID_DIAGRAM = {
+  data: [{ name: "Counter", role: "state", fields: "count: number = 0" }],
   nodes: [
     { id: "start", kind: "start", label: "Start" },
-    { id: "count", kind: "dataStore", label: "count", description: "starts at 0" },
-    { id: "more", kind: "decision", label: "Below 10?", condition: "count < 10" },
-    { id: "inc", kind: "step", label: "Increment", description: "count += 1" },
+    { id: "more", kind: "decision", label: "Below 10?", condition: "Counter.count < 10" },
+    { id: "inc", kind: "step", label: "Increment", description: "Counter.count += 1" },
     { id: "end", kind: "end", label: "Done" },
   ],
   edges: [
-    { from: "start", to: "count" },
-    { from: "count", to: "more" },
+    { from: "start", to: "more" },
     { from: "more", to: "inc", label: "yes" },
     { from: "inc", to: "more" },
     { from: "more", to: "end", label: "no" },
@@ -31,18 +30,65 @@ describe("parseAssistReply", () => {
     if ("error" in result) throw new Error(result.error);
     expect(result.reply).toBe("Counted to 10.");
     expect(validateGraph(result.graph!).valid).toBe(true);
+    expect(result.graph!.data).toEqual([
+      { id: "data_1", name: "Counter", role: "state", description: undefined, fields: [{ name: "count", type: "number", value: "0" }] },
+    ]);
+  });
+
+  it("reads call nodes, including kinds that name the call type", () => {
+    const result = parseAssistReply(
+      JSON.stringify({
+        reply: "ok",
+        diagram: {
+          nodes: [
+            { id: "a", kind: "call", label: "Verify", callType: "REST", operation: "POST", target: "/verify", input: "Request.id" },
+            { id: "b", kind: "database", label: "Save", method: "insert", table: "users" },
+            { id: "c", kind: "call", label: "Mystery", callType: "teleport" },
+          ],
+          edges: [],
+        },
+      })
+    );
+    if ("error" in result) throw new Error(result.error);
+    const [a, b, c] = result.graph!.nodes.map((n) => n.data);
+    expect(a).toMatchObject({ kind: "call", callType: "rest", operation: "POST", target: "/verify", input: "Request.id" });
+    expect(b).toMatchObject({ kind: "call", callType: "db", operation: "insert", target: "users" });
+    expect(c).toMatchObject({ kind: "call", callType: "rest" });
+  });
+
+  it("turns old-style data nodes into data objects and keeps the flow joined", () => {
+    const result = parseAssistReply(
+      JSON.stringify({
+        reply: "ok",
+        diagram: {
+          nodes: [
+            { id: "s", kind: "start" },
+            { id: "v", kind: "variable", label: "Order state", fields: ["orders", "total = 0"] },
+            { id: "e", kind: "end" },
+          ],
+          edges: [
+            { from: "s", to: "v" },
+            { from: "v", to: "e" },
+          ],
+        },
+      })
+    );
+    if ("error" in result) throw new Error(result.error);
+    expect(result.graph!.nodes.map((n) => n.id)).toEqual(["s", "e"]);
+    expect(result.graph!.edges.map((e) => [e.source, e.target])).toEqual([["s", "e"]]);
+    expect(result.graph!.data).toMatchObject([{ name: "OrderState", fields: [{ name: "orders" }, { name: "total", value: "0" }] }]);
   });
 
   it("accepts an answer with no diagram change", () => {
-    expect(parseAssistReply('{"reply": "Use a dataStore.", "diagram": null}')).toEqual({
-      reply: "Use a dataStore.",
+    expect(parseAssistReply('{"reply": "Use a call node.", "diagram": null}')).toEqual({
+      reply: "Use a call node.",
       graph: null,
     });
   });
 
   it("ignores a diagram drawn in answer to a question", () => {
-    const raw = JSON.stringify({ intent: "question", reply: "Use a dataStore.", diagram: VALID_DIAGRAM });
-    expect(parseAssistReply(raw)).toEqual({ reply: "Use a dataStore.", graph: null });
+    const raw = JSON.stringify({ intent: "question", reply: "Use a call node.", diagram: VALID_DIAGRAM });
+    expect(parseAssistReply(raw)).toEqual({ reply: "Use a call node.", graph: null });
   });
 
   it("forgives fences, chatter, kind synonyms and True/False branches", () => {
@@ -54,14 +100,12 @@ describe("parseAssistReply", () => {
         diagram: {
           nodes: [
             { id: "s", kind: "Start" },
-            { id: "v", kind: "variable", label: "x" },
             { id: "d", kind: "Decision", label: "x > 1?" },
             { id: "a", kind: "action", label: "Shout" },
             { id: "e", kind: "stop" },
           ],
           edges: [
-            { from: "s", to: "v" },
-            { from: "v", to: "d" },
+            { from: "s", to: "d" },
             { from: "d", to: "a", label: "True" },
             { from: "d", to: "e", label: "False" },
             { from: "a", to: "e", label: "ignored on a step" },
@@ -72,8 +116,8 @@ describe("parseAssistReply", () => {
     ].join("\n");
     const result = parseAssistReply(raw);
     if ("error" in result) throw new Error(result.error);
-    expect(result.graph!.nodes.map((n) => n.data.kind)).toEqual(["start", "dataStore", "decision", "step", "end"]);
-    expect(result.graph!.edges.map((e) => e.label)).toEqual([undefined, undefined, "yes", "no", undefined]);
+    expect(result.graph!.nodes.map((n) => n.data.kind)).toEqual(["start", "decision", "step", "end"]);
+    expect(result.graph!.edges.map((e) => e.label)).toEqual([undefined, "yes", "no", undefined]);
     expect(validateGraph(result.graph!).valid).toBe(true);
   });
 
@@ -96,8 +140,10 @@ describe("parseAssistReply", () => {
 describe("buildAssistPrompt", () => {
   it("includes the node guide, the current diagram and the request", () => {
     const prompt = buildAssistPrompt("add logging", EXAMPLE_DIAGRAM);
-    expect(prompt).toContain("- dataStore:");
+    expect(prompt).toContain("- call:");
+    expect(prompt).not.toContain("- dataStore:");
     expect(prompt).toContain('"label":"More orders?"');
+    expect(prompt).toContain('"name":"Totals","role":"state","fields":"orders: list, total: number = 0"');
     expect(prompt).toContain("add logging");
   });
 });
@@ -129,14 +175,32 @@ describe("POST /api/assist", () => {
     expect(data.reply).toBe("Built a counter.");
     expect(data.issues).toEqual([]);
     expect(validateGraph(data.graph).valid).toBe(true);
+    expect(data.graph.data.map((d: { name: string }) => d.name)).toEqual(["Counter"]);
     const ys = data.graph.nodes.map((n: { position: { y: number } }) => n.position.y);
     expect(new Set(ys).size).toBeGreaterThan(1);
   });
 
+  it("keeps the current data objects when the model leaves data out", async () => {
+    const { data: _omitted, ...withoutData } = VALID_DIAGRAM;
+    vi.stubGlobal("fetch", vi.fn(async () => modelSays({ reply: "ok", diagram: withoutData })));
+    const res = await POST(request({ request: "tidy up", graph: EXAMPLE_DIAGRAM }));
+    const body = await res.json();
+    expect(body.graph.data).toEqual(EXAMPLE_DIAGRAM.data!.map((d) => ({ ...d, position: expect.any(Object) })));
+  });
+
+  it("keeps where the user put a data set's table", async () => {
+    const placed = { ...EXAMPLE_DIAGRAM, data: EXAMPLE_DIAGRAM.data!.map((d, i) => ({ ...d, position: { x: -900, y: i * 200 } })) };
+    vi.stubGlobal("fetch", vi.fn(async () => modelSays({ reply: "ok", diagram: VALID_DIAGRAM })));
+    const res = await POST(request({ request: "tidy up", graph: placed }));
+    const body = await res.json();
+    const counter = body.graph.data.find((d: { name: string }) => d.name === "Counter");
+    expect(counter.position.x).toBeLessThan(0);
+  });
+
   it("answers questions without changing the diagram", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => modelSays({ reply: "Use a dataStore.", diagram: null })));
+    vi.stubGlobal("fetch", vi.fn(async () => modelSays({ reply: "Use a call node.", diagram: null })));
     const res = await POST(request({ request: "what is a variable?", graph: EXAMPLE_DIAGRAM }));
-    expect(await res.json()).toEqual({ reply: "Use a dataStore.", graph: null, issues: [] });
+    expect(await res.json()).toEqual({ reply: "Use a call node.", graph: null, issues: [] });
   });
 
   it("asks the model to fix an invalid diagram once", async () => {

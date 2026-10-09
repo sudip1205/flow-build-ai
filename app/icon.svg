@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="FlowBuild-AI">
+  <defs>
+    <linearGradient id="fbBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366F1"/><stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#fbBg)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="40,42 20,64 40,86"/>
+    <polyline points="88,42 108,64 88,86"/>
+  </g>
+  <line x1="54" y1="84" x2="74" y2="44" stroke="#E0F2FE" stroke-width="5" stroke-linecap="round" stroke-dasharray="0.1 9"/>
+  <rect x="44" y="83" width="16" height="16" rx="4" fill="#FFFFFF"/>
+  <circle cx="76" cy="38" r="8.5" fill="#FFFFFF"/>
+  <path d="M106 12 C107.5 19 109 20.5 116 22 C109 23.5 107.5 25 106 32 C104.5 25 103 23.5 96 22 C103 20.5 104.5 19 106 12 Z" fill="#FDE68A"/>
+</svg>

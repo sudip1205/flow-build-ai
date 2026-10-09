@@ -121,18 +121,19 @@ export function buildCodegenPrompt(spec: string, language: TargetLanguage): stri
     ``,
     `Project layout (create every file that applies; <Placeholders> are names you choose from the flowchart):`,
     ...layout.files.map((file) => `- ${file}`),
-    `- README.md — what the service does, how to configure and run it, the endpoint with an example request and response, and a table of every external REST call and database table it uses.`,
+    `- README.md — what the service does, how to configure and run it, the endpoint with an example request and response, and a table of every backend call (by type) and database table it uses.`,
     ``,
     `How to read the flowchart:`,
-    `- DATA nodes are the flow's inputs and state. Inputs become the fields of FlowRequest, typed sensibly (ids, emails, amounts, dates) and validated; state becomes local variables in the service.`,
-    `- STEP [REST API CALL] nodes call an external system; STEP [DB CALL] nodes read or write a database table; STEP [LOGIC] nodes are plain code in the service.`,
-    `- A STEP without a tag: infer its type from its label and description. Calling another system, service or API (e.g. "Call to Salesforce", "Verify with payment gateway") is a REST call; reading or writing a database, table or store (e.g. "Call CIAM DB", "Save order") is a DB call; anything else is logic.`,
+    `- DATA lists the flow's data objects, each with a role and typed fields. Role "input" objects become FlowRequest (their fields typed as given, otherwise sensibly: ids, emails, amounts, dates) and validated; "output" objects become FlowResponse; "state" objects are the service's working variables (one small class/struct per object when it has several fields); "config" objects are settings read from environment variables in config. With no DATA section, infer the request, response and state from the flow.`,
+    `- Name.field anywhere in the flow refers to that field of the data object called Name; use that exact field in the code. A name that isn't a data object (e.g. order.amount inside a loop) is an ordinary variable.`,
+    `- CALL nodes are backend calls, tagged with their type, operation and target; "input" is what the call sends and "output" is where its result goes. REST API -> an HTTP client method; GRAPHQL -> a GraphQL client method sending that query or mutation; GRPC -> a gRPC client stub call; DATABASE -> a repository method on that table's repository; QUEUE -> a message producer (publish) or consumer handler (consume) for that topic; CACHE -> a cache client (Redis-style) get/set/delete on that key; EMAIL -> a notification sender using that channel and template; SDK -> a thin wrapper class around that third-party SDK method; LLM -> an AI model client with the prompt built from the input and a parsed, typed result.`,
+    `- STEP nodes are plain logic in the service. Older diagrams may still describe a call in a STEP (e.g. "Call to Salesforce", "Call CIAM DB"): treat a step that clearly calls another system as a REST call and one that reads or writes a database as a DB call.`,
     `- DECISION nodes become if/else in the service; the "yes"/"no" edge labels say which branch is which. An edge back to an earlier node is a loop, not recursion.`,
     `- The END reached on the success path produces FlowResponse. A STEP that rejects, denies or reports an error ends the flow with a failure: throw a dedicated exception that the error handler maps to a fitting HTTP status (e.g. 403, 404, 409, 422) with an error body.`,
     ``,
     `Rules for each layer:`,
-    `- REST calls: group them by external system — one client per system, one method per call. Write each call in full: HTTP method, path (the given endpoint, otherwise a plausible one marked with a "TODO: confirm endpoint" comment), base URL and API key from config, Content-Type and Authorization headers, a timeout, the typed request body built from the flow's data, the typed response, and handling of non-2xx responses. Every call gets its own request model and response model, each in its own file, holding the fields the flowchart sends and reads; client methods take and return these models, never loose parameters or raw maps.`,
-    `- DB calls: group them by table — one entity and one repository per table. Use the given table name, otherwise infer one from the step (e.g. "Call CIAM DB ... userId or Email" -> a users table). Give each entity an id, the columns the flow reads or writes with sensible types, and created/updated timestamps. Give each repository exactly the query methods the flow uses (e.g. find by userId or email). The service calls repositories directly: never wrap a database in a client class.`,
+    `- Calls to other systems (REST, GraphQL, gRPC, SDK, LLM, email): group them by external system — one client per system, one method per call. Write each REST call in full: HTTP method, path (the given endpoint, otherwise a plausible one marked with a "TODO: confirm endpoint" comment), base URL and API key from config, Content-Type and Authorization headers, a timeout, the typed request body built from the flow's data, the typed response, and handling of non-2xx responses. Every call gets its own request model and response model, each in its own file, holding the fields the flowchart sends and reads; client methods take and return these models, never loose parameters or raw maps.`,
+    `- DATABASE calls: group them by table — one entity and one repository per table. Use the given table name, otherwise infer one from the step (e.g. "Call CIAM DB ... userId or Email" -> a users table). Give each entity an id, the columns the flow reads or writes with sensible types, and created/updated timestamps. Give each repository exactly the query methods the flow uses (e.g. find by userId or email). The service calls repositories directly: never wrap a database in a client class.`,
     `- The service holds all decisions and orchestration and nothing else: no HTTP code, no SQL. Name its public method after what the flow does.`,
     `- Treat SSNs, account numbers and similar identifiers as sensitive: never log them in full.`,
     `- The test covers every DECISION branch, with clients and repositories faked or mocked.`,
@@ -144,6 +145,9 @@ export function buildCodegenPrompt(spec: string, language: TargetLanguage): stri
     ``,
     `Flowchart:`,
     spec,
+    ``,
+    // Repeated last: on a long prompt, smaller models forget format rules they read before the flowchart.
+    `Remember: start every file with an opening fence that names its full path, e.g. \`\`\`${FENCE_LANG[language]} ${layout.service} — never "Part 1", a heading, or a fence without a path.`,
   ].join("\n");
 }
 
@@ -155,40 +159,81 @@ const NAME_COMMENT = /^(?:#|\/\/)\s*(?:file(?:name)?:\s*)?(\S+)\s*$/i;
 const FENCE = /^\s*```([^`]*)$/;
 
 /**
- * Finds the reply's fenced blocks line by line. Markdown files often hold
- * fenced examples of their own despite the prompt, so inside one an opening
- * fence with a language nests and a bare fence closes the innermost block.
- * A reply cut off at the output limit ends inside a block: that block is kept.
+ * Finds the reply's fenced blocks line by line, with the prose just before
+ * each one (where models that ignore the format write the file name, e.g.
+ * "### pom.xml"). Markdown files often hold fenced examples of their own
+ * despite the prompt, so inside one an opening fence with a language nests
+ * and a bare fence closes the innermost block. A reply cut off at the output
+ * limit ends inside a block: that block is kept.
  */
-function fencedBlocks(raw: string): { info: string; content: string }[] {
-  const blocks: { info: string; content: string }[] = [];
-  let open: { info: string; lines: string[]; markdown: boolean; depth: number } | undefined;
+function fencedBlocks(raw: string): { info: string; content: string; before: string[] }[] {
+  const blocks: { info: string; content: string; before: string[] }[] = [];
+  let open: { info: string; lines: string[]; markdown: boolean; depth: number; before: string[] } | undefined;
+  let prose: string[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const fence = line.match(FENCE);
     if (!open) {
       if (fence) {
         const info = fence[1].trim();
-        open = { info, lines: [], markdown: /^(markdown|md)\b|\.md\b/i.test(info), depth: 0 };
-      }
+        open = { info, lines: [], markdown: /^(markdown|md)\b|\.md\b/i.test(info), depth: 0, before: prose };
+        prose = [];
+      } else if (line.trim()) prose.push(line.trim());
       continue;
     }
     if (fence && open.markdown && fence[1].trim()) open.depth++;
     else if (fence && open.depth > 0) open.depth--;
     else if (fence) {
-      blocks.push({ info: open.info, content: open.lines.join("\n") });
+      blocks.push({ info: open.info, content: open.lines.join("\n"), before: open.before });
       open = undefined;
       continue;
     }
     open.lines.push(line);
   }
-  if (open) blocks.push({ info: open.info, content: open.lines.join("\n") });
+  if (open) blocks.push({ info: open.info, content: open.lines.join("\n"), before: open.before });
   return blocks;
+}
+
+// Extensions a file named in prose can have, so "e.g." or "v1.2" aren't taken for file names.
+const KNOWN_EXTENSION =
+  /\.(java|kt|kts|gradle|xml|ya?ml|properties|md|py|txt|toml|cfg|ini|ts|tsx|js|mjs|cjs|json|go|mod|sum|sql|sh|env|html|css)$/i;
+
+/** The last file name mentioned in the prose before a block: "### `src/App.java`", "**pom.xml**:", "File: a.py". */
+function nameFromProse(lines: string[]): string | undefined {
+  for (const line of lines.slice(-3).reverse()) {
+    const words = line.split(/\s+/).map((w) => w.replace(/^[^\w]+|[^\w]+$/g, ""));
+    const name = words.reverse().find((w) => FILE_NAME.test(w) && KNOWN_EXTENSION.test(w));
+    if (name) return name;
+  }
+  return undefined;
+}
+
+/**
+ * A name worked out from what's in the block, for Java: a class goes where
+ * its package says (a test class under src/test), and the build file and
+ * settings are recognised by their content. A bare "FlowService.java" is
+ * placed the same way.
+ */
+function nameFromContent(content: string, info: string, language: TargetLanguage, name?: string): string | undefined {
+  if (language !== "java" || name?.includes("/")) return name;
+  const pkg = content.match(/^\s*package\s+([\w.]+)\s*;/m);
+  const type = content.match(/^\s*(?:public\s+)?(?:(?:abstract|final|sealed)\s+)*(?:class|interface|enum|record|@interface)\s+(\w+)/m);
+  if (pkg && (type || name?.endsWith(".java"))) {
+    const file = name ?? `${type![1]}.java`;
+    const root = /Tests?\.java$/.test(file) ? "src/test/java" : "src/main/java";
+    return `${root}/${pkg[1].replace(/\./g, "/")}/${file}`;
+  }
+  if (name) return /^application\.(ya?ml|properties)$/.test(name) ? `src/main/resources/${name}` : name;
+  if (/^\s*(<\?xml[^>]*>\s*)?<project\b/.test(content)) return "pom.xml";
+  if (/^ya?ml$/i.test(info) || /^\s*(spring|server):\s*$/m.test(content)) return "src/main/resources/application.yml";
+  if (/^(markdown|md)$/i.test(info)) return "README.md";
+  return undefined;
 }
 
 /**
  * Splits the model's reply into files. Models don't always follow the format,
- * so a name may also come from a first-line comment or a block holding only
- * the name; unnamed blocks fill the service file, then its test; a reply with
+ * so a name may also come from a first-line comment, a block holding only
+ * the name, the line above the block, or (for Java) the block's package and
+ * class; unnamed blocks fill the service file, then its test; a reply with
  * no fences at all is taken as the service file; and an unclosed last block
  * (a reply cut off mid-file) is kept as far as it got.
  */
@@ -216,6 +261,7 @@ export function extractFiles(raw: string, language: TargetLanguage): GeneratedFi
       name ??= comment[1];
       content = content.slice(content.indexOf("\n") + 1).replace(/^\s*\n/, "");
     }
+    name = nameFromContent(content, m.info, language, name ?? nameFromProse(m.before));
     const path = name ?? unnamed.find((p) => !files.has(p)) ?? `part${i + 1}.${service.split(".").pop()}`;
     // The same name twice (e.g. a helper split out mid-file) belongs together.
     files.set(path, files.has(path) ? `${files.get(path)}\n\n${content}` : content);

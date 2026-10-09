@@ -98,14 +98,20 @@ export async function POST(req: NextRequest) {
   }
 
   const prompt = buildAssistPrompt(request, current);
+  // A diagram without "data" keeps the current data objects.
+  const parse = (raw: string) => {
+    const reply = parseAssistReply(raw);
+    if ("error" in reply || !reply.graph || reply.graph.data) return reply;
+    return { ...reply, graph: { ...reply.graph, data: current.data } };
+  };
   let result: AssistReply | { error: string };
   try {
     let raw = (await provider.generate(prompt)).text;
-    result = parseAssistReply(raw);
+    result = parse(raw);
     let problems = problemsWith(result);
     for (let attempt = 0; attempt < MAX_REPAIRS && problems.length; attempt++) {
       const retriedRaw = (await provider.generate(buildAssistRepairPrompt(prompt, raw, problems))).text;
-      const retried = parseAssistReply(retriedRaw);
+      const retried = parse(retriedRaw);
       const retriedProblems = problemsWith(retried);
       // Keep whichever answer is closer to valid; a "fix" can make things worse.
       const worse = "error" in retried && !("error" in result);

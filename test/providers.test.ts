@@ -38,6 +38,13 @@ describe("OpenAICompatibleProvider", () => {
     mockFetch({ error: "nope" }, 500);
     await expect(new OpenAICompatibleProvider("https://x.example.com", "m").generate("hi")).rejects.toThrow(/500/);
   });
+
+  it("names the model when the server can't read its name", async () => {
+    mockFetch({ error: { message: "model is required", type: "api_error" } }, 400);
+    await expect(new OpenAICompatibleProvider("https://x.example.com", "qwen 2.5").generate("hi")).rejects.toThrow(
+      'didn\'t accept the model name "qwen 2.5"'
+    );
+  });
 });
 
 describe("getProvider", () => {

@@ -1,4 +1,4 @@
-import { FlowGraph, FlowNode, NodeKind } from "./types";
+import { DataObject, FlowGraph, FlowNode, NodeKind } from "./types";
 
 const ROW_HEIGHT = 170;
 const COLUMN_WIDTH = 300;
@@ -10,7 +10,7 @@ const NODE_WIDTHS: Record<NodeKind, number> = {
   start: 32,
   end: 32,
   step: CARD_WIDTH,
-  dataStore: CARD_WIDTH,
+  call: CARD_WIDTH,
   decision: 190,
 };
 
@@ -77,6 +77,10 @@ const overlaps = (a: Point, b: Point) =>
  * instead, since a clean layout beats a preserved but overlapping one.
  */
 export function autoLayout(graph: FlowGraph, previous?: FlowGraph): FlowGraph {
+  return placeData(layoutNodes(graph, previous), previous);
+}
+
+function layoutNodes(graph: FlowGraph, previous?: FlowGraph): FlowGraph {
   const auto = layeredPositions(graph);
   const withPositions = (pos: Map<string, Point>): FlowGraph => ({
     ...graph,
@@ -106,4 +110,42 @@ export function autoLayout(graph: FlowGraph, previous?: FlowGraph): FlowGraph {
     final.set(id, pos);
   }
   return withPositions(final);
+}
+
+const TABLE_WIDTH = 220;
+const TABLE_GAP = 40;
+// Rough rendered height of a data table (see .fb-table in globals.css).
+const tableHeight = (d: DataObject) => 64 + 26 * d.fields.length;
+
+/**
+ * Gives every data object a spot for its table. Objects keep their own
+ * position, or the one the same object (by id, then name) had in `previous`;
+ * the rest stack in a column to the left of the flow, under any tables
+ * already there.
+ */
+export function placeData(graph: FlowGraph, previous?: FlowGraph): FlowGraph {
+  if (!graph.data?.some((d) => !d.position)) return graph;
+  const before = previous?.data ?? [];
+  const kept = (d: DataObject) =>
+    d.position ?? (before.find((p) => p.id === d.id) ?? before.find((p) => p.name === d.name))?.position;
+
+  const xs = graph.nodes.map((n) => n.position.x);
+  const ys = graph.nodes.map((n) => n.position.y);
+  const x = (xs.length ? Math.min(...xs) : 0) - TABLE_WIDTH - 120;
+  let y = ys.length ? Math.min(...ys) : 0;
+  for (const d of graph.data) {
+    const p = kept(d);
+    if (p && Math.abs(p.x - x) < TABLE_WIDTH) y = Math.max(y, p.y + tableHeight(d) + TABLE_GAP);
+  }
+
+  return {
+    ...graph,
+    data: graph.data.map((d) => {
+      const p = kept(d);
+      if (p) return { ...d, position: p };
+      const position = { x, y };
+      y += tableHeight(d) + TABLE_GAP;
+      return { ...d, position };
+    }),
+  };
 }
