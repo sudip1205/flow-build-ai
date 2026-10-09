@@ -6,6 +6,10 @@
 
 Draw a flowchart, pick a language, get a working project.
 
+<p align="center">
+  <img src="docs/demo.svg" alt="A flowchart is drawn node by node, then FlowBuild-AI generates a layered Spring Boot project from it" width="900">
+</p>
+
 FlowBuild-AI is a model-agnostic tool: build a flow diagram out of a small,
 constrained set of node types, and generate a layered, runnable service for
 it in Python, TypeScript, Go or Java. You can also describe the flow in plain
